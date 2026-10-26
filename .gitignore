@@ -22,3 +22,5 @@ core/pkg/
 *.log
 .DS_Store
 Thumbs.db
+
+.github/
