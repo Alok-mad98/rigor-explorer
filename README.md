@@ -1,146 +1,114 @@
-# RIGOR Explorer — Every Block, Every Transaction, in the Open
+# RIGOR Explorer 98 — Every Block, Every Transaction, in the Open
 
-**A read-only explorer for the RIGOR mainnet. Search a height, a block hash, a transaction id or an `rg1q…` address and see the whole story: blocks, rewards, UTXOs, mining payouts, convergence activity and burns — in a terminal-styled interface that stays out of your way.**
+**A retro-desktop explorer for the RIGOR mainnet.** Boot into a classic teal desktop, open `My Computer`, drag windows around, watch the chain in 3D — and look up any block, transaction or address: balances, UTXOs, mining payouts, convergence activity and burns, read straight from the chain.
 
-*Live at: https://rigor-explorer.pages.dev*
+**Live:** https://rigor-explorer.pages.dev
+**Backend (Rust):** https://rigor-explorer-api.arechampionw.workers.dev/health
 
 ---
 
 ## Table of Contents
 
-- [The Story (plain English)](#the-story-plain-english)
+- [Why it looks like 1995](#why-it-looks-like-1995)
+- [The stack: Rust at both ends](#the-stack-rust-at-both-ends)
 - [What you can do](#what-you-can-do)
 - [How it works](#how-it-works)
-- [The API behind it](#the-api-behind-it)
-- [Deployment (Cloudflare Pages)](#deployment-cloudflare-pages)
+- [Build and deploy](#build-and-deploy)
 - [Security: no credentials, anywhere](#security-no-credentials-anywhere)
-- [Run it locally](#run-it-locally)
 - [Repository layout](#repository-layout)
 - [Disclaimer](#disclaimer)
 
 ---
 
-## The Story (plain English)
+## Why it looks like 1995
 
-[RIGOR](https://www.rigorchain.com/) is a Bitcoin-inspired, proof-of-work UTXO chain with **two native monetary roles**: **ORU** (the transaction and mining asset, 128 ORU per block forever) and **RES** (a scarce asset that can only be minted by *destroying* ORU through a mechanism called **Convergence**).
+The RIGOR website presents itself as a retro desktop OS — beveled windows, navy title bars, a taskbar with a Start menu. This explorer takes that visual language seriously and turns the *explorer itself* into a small operating system: boot screen, desktop icons, draggable windows, a tray with a live chain LED and a clock. The information architecture inside the windows — live status pill, smart search, per-block detail, address flows — is what a modern explorer should do. Old computer on the outside, current data on the inside.
 
-Every chain needs a window. The official explorer exists, but as a community we wanted a second window with a different personality: the terminal feel of the RIGOR website itself, combined with the deep mechanics a modern explorer should have — live status, per-block stats, address flows, UTXO breakdowns, raw transaction data and instant search.
+## The stack: Rust at both ends
 
-So this is that window. It reads **only** the public chain API, caches nothing sensitive, stores nothing, and writes nothing. If the node says it, you can check it — the explorer's job is to show it.
-
-> **What this is not:** it is not a wallet, not a mining pool dashboard, not operated by the RIGOR project, and it never asks for keys. It is a read-only pane of glass onto the chain.
-
----
+| Layer | Technology | What it does |
+| --- | --- | --- |
+| **Backend** | Rust → WebAssembly, [workers-rs](https://github.com/cloudflare/workers-rs) on Cloudflare Workers | Read-only proxy of the public chain API with CORS and edge caching, plus a `/api/resolve` endpoint that classifies any search query (height, 64-hex, address) server-side |
+| **Frontend core** | Rust → WebAssembly (`core/`) | Query classification, exact atom→ORU math on `u128` (no floating point anywhere near money), and window summaries over the last 100 blocks. The React app loads it at startup and falls back to a JS implementation if WASM is unavailable |
+| **Frontend** | React 18 + Vite + Three.js | The desktop shell, window manager, taskbar, all data windows, and a 3D chain visualizer (drag to rotate, click a cube to open that block) |
 
 ## What you can do
 
-| Feature | What it shows |
-| --- | --- |
-| **Overview** | Live tip height, difficulty, estimated hashrate, peers, mempool, monetary state (ORU circulating, burns, RES stats), latest blocks |
-| **Blocks** | The last 100 blocks with age, time, tx count, ORU minted, convergence burn |
-| **Block detail** | Full header: hash, previous hash, bits, merkle root, Opus hash, minted/burned, consensus fingerprint status |
-| **Transaction detail** | Tx metadata (block, index, coinbase flag, version, locktime) plus the full raw hex |
-| **Address detail** | ORU/RES balances, lifetime received/spent, UTXO list with spendability, transaction history, **Convergence activity** (mints, winner/candidate roles) and **RES minted via this address** |
-| **Mining payouts** | RIGOR has no pools — every block reward is a coinbase UTXO paid directly to the miner's own `rg1q…` address. The address page makes those payouts visible (total received, spendable UTXOs, history) |
-| **Search** | Type anything: a number → block, a 64-char hash → transaction or block, an `rg1q…` string → address |
-| **Stats** | Per-block charts (transactions, convergence burns) computed in your browser from chain data |
-| **Network & API** | Chain identity, live node state, and the full public API surface |
+- **Overview (My Computer)** — tip height, difficulty, estimated hashrate, peers, mempool, the full monetary state (ORU circulating, immature coinbase, convergence burns, fee burns, RES stats)
+- **Blocks** — the last 100 blocks: age, time, tx count, ORU minted, convergence burn, RES minted
+- **Block detail** — full header (hash, previous, bits, merkle root, Opus hash) plus reward and consensus panels
+- **Transaction detail** — summary plus the complete raw hex in a notepad-style terminal
+- **Address lookup** — balances, lifetime received/spent, UTXO list, transaction history, convergence activity (mints, winner/candidate roles)
+- **Mining payouts, explained** — RIGOR has no pools: every block reward is a coinbase UTXO paid directly to the miner's own `rg1q…` address. The address window makes those payouts visible
+- **Chain Visualizer 3D** — the last 24 blocks as a rotating phosphor-green chain; the tip pulses; click any cube to open the block
+- **Find** — paste anything: a number opens a block, a 64-hex string resolves to a transaction or block, an `rg1q…` string opens the address
+- **Statistics** — transactions and convergence burns per block, drawn as charts, with window summaries computed in Rust/WASM
+- **Network Neighborhood** — chain identity, live node state, and the API surface
 
-**Live updates:** the header pill polls the chain every 12 seconds. When a new block lands, the Overview, Blocks and Stats pages refresh themselves — the pill reads `LIVE · HEIGHT n`.
-
----
+The tray LED polls the chain every 12 seconds: green when connected, red when the API is unreachable.
 
 ## How it works
 
 ```
-  your browser
-      │  (static SPA — vanilla JS, no build step, no trackers)
-      ▼
-  rigor-explorer.pages.dev  ──►  /functions  (Cloudflare Pages Functions)
-      │                            thin read-only proxy:
-      │                            adds CORS + 5s edge cache, no keys
-      ▼
-  explorer.rigorchain.com/api  (the public RIGOR chain API)
+React + Three.js (Vite build)                Rust core (WASM)
+        └── explorer logic: classify, 128-bit atom math ──┘
+                    │
+                    ▼  HTTPS, read-only, CORS
+        rigor-explorer-api.<subdomain>.workers.dev
+                    │  Rust Cloudflare Worker
+                    ▼
+        explorer.rigorchain.com/api  (the official public chain API)
 ```
 
-- **No build step.** Plain HTML/CSS/JS. Clone it, open it, or deploy it as-is.
-- **No trackers, no analytics, no cookies.** The only network calls are to the chain API through the proxy.
-- **Hash routing** (`#/blocks`, `#/address/rg1q…`) so every view is linkable.
+No accounts, no database, no writes. The whole system is a pane of glass over the public chain API.
 
-The design is a nod to the RIGOR website's own desktop/BIOS aesthetic — monospace, phosphor green on black, scanlines — combined with the information architecture a serious explorer needs.
+## Build and deploy
 
----
-
-## The API behind it
-
-This explorer speaks the same public API as the official RIGOR explorer:
-
-| Endpoint | Returns |
-| --- | --- |
-| `GET /api/status` | Chain identity, block health, monetary snapshot, mining state |
-| `GET /api/blocks?limit=N` | Most recent N blocks |
-| `GET /api/block/{height\|hash}` | Full block header + consensus data |
-| `GET /api/tx/{txid}` | Transaction metadata + raw hex |
-| `GET /api/address/{addr}` | Balances, UTXOs, history, Convergence activity |
-
-A search endpoint does not exist upstream, so search is implemented client-side with strict pattern matching (height / 64-hex / bech32 address) — no guessing, no fuzzy magic.
-
----
-
-## Deployment (Cloudflare Pages)
-
-The site is a static bundle plus one Pages Function, so it deploys to Cloudflare Pages in one command:
+Frontend:
 
 ```bash
-npx wrangler pages deploy . --project-name=rigor-explorer
+cd web
+npm install
+npm run build
+npx wrangler pages deploy dist --project-name=rigor-explorer
 ```
 
-- **Production URL:** `https://rigor-explorer.pages.dev`
-- Every push to the connected branch redeploys automatically if you connect the repo in the Cloudflare dashboard.
-- The `functions/api/[[route]].js` handler is picked up automatically by Pages — no build configuration needed.
+Backend worker (Rust):
 
-> Note: Cloudflare Pages subdomains cannot contain dots (`.`), so the URL is
-> `rigor-explorer.pages.dev` rather than `rigor.explorer.pages.dev`.
+```bash
+cd worker
+cargo build --lib --release --target wasm32-unknown-unknown
+wasm-bindgen target/wasm32-unknown-unknown/release/rigor_explorer_api.wasm \
+  --out-dir generated --target bundler
+npx wrangler deploy
+```
 
----
+Frontend core (Rust → WASM, consumed by the React app):
+
+```bash
+cd core
+cargo build --release --target wasm32-unknown-unknown
+wasm-bindgen target/wasm32-unknown-unknown/release/explorer_core.wasm \
+  --out-dir ../web/src/wasm --target web
+```
+
+The worker's generated bindings are committed so `wrangler deploy` works without a Rust toolchain; rebuild them with the commands above after changing `worker/src/lib.rs`.
 
 ## Security: no credentials, anywhere
 
-- **There are no secrets in this project.** The upstream API is public and read-only; the proxy adds caching and CORS, nothing else.
-- `.gitignore` blocks `.env*` files so nothing accidental can be committed.
-- No API keys, tokens, cookies or identifiers are embedded in the client or the functions.
-- The site is **read-only** end to end: no POSTs to the chain, no transaction relaying, no wallet connections.
-
-If you fork this, keep it that way.
-
----
-
-## Run it locally
-
-```bash
-# any static server works; the /api path needs the proxy:
-npx wrangler pages dev .          # recommended: serves site + functions
-# or, API-less quick look:
-python -m http.server 8080        # static pages will show API errors
-```
-
-Then open `http://localhost:8788` (wrangler) or `http://localhost:8080` (static).
-
----
+- The upstream chain API is public and read-only; the Rust worker adds caching and CORS, nothing else
+- No API keys, tokens or secrets exist in this repository, the worker, or the client bundle
+- `.gitignore` blocks every `.env*` file
+- The site never asks for keys and cannot sign or relay anything
 
 ## Repository layout
 
 ```
-index.html                  shell: nav, status pill, footer
-assets/site.css             terminal/BIOS theme
-assets/app.js               SPA: router, pages, search, charts, live polling
-functions/api/[[route]].js  read-only proxy to the public chain API
-README.md                   this file
-LICENSE                     MIT
+web/      React + Vite + Three.js frontend (desktop shell, windows, pages, 3D scene)
+core/     Rust crate compiled to WASM: query classification, atom math, summaries
+worker/   Rust Cloudflare Worker: API proxy + /api/resolve
 ```
-
----
 
 ## Disclaimer
 
-Independent community tooling. **Not affiliated with, endorsed by, or operated by the RIGOR project.** Data comes from the public chain API and may lag the chain tip by a few seconds. Nothing here is financial advice; RIGOR's ORU and RES are experimental assets on a young network — treat them accordingly.
+Independent community tooling. Not affiliated with, endorsed by, or operated by the RIGOR project. Data comes from the public chain API and may lag the tip by a few seconds. Nothing here is financial advice; ORU and RES are experimental assets on a young network.

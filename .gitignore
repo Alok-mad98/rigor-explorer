@@ -1,12 +1,24 @@
+# secrets — never commit
 .env
 .env.*
 !.env.example
+
+# node
 node_modules/
+web/dist/
+
+# rust / wasm build artifacts
+worker/target/
+worker/build/
+worker/test_out/
+core/target/
+core/pkg/
+
+# wrangler state
 .wrangler/
-dist/
+.wrangler.toml
+
+# misc
 *.log
 .DS_Store
 Thumbs.db
-.wrangler.toml
-wrangler.toml
-wrangler.jsonc
